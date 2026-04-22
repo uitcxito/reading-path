@@ -5,7 +5,7 @@ import UploadArea from '@/components/UploadArea';
 import QuestionInput from '@/components/QuestionInput';
 import ProgressBar, { AnalysisStep } from '@/components/ProgressBar';
 import ComprehensionTestDisplay from '@/components/ComprehensionTestDisplay';
-import { BookData, ReadingMap, TestQuestion } from '@/types';
+import { BookData, ReadingMap, TestQuestion, ChapterRecommendation, SectionRecommendation, ChapterDependency } from '@/types';
 
 type AppState = 'upload' | 'analyzing' | 'result' | 'test';
 
@@ -18,10 +18,9 @@ export default function Home() {
   const [testQuestions, setTestQuestions] = useState<TestQuestion[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [steps, setSteps] = useState<AnalysisStep[]>([
-    { id: 'parse', label: '解析书籍结构', status: 'pending' },
+    { id: 'parse', label: '解析书籍结构（含小节）', status: 'pending' },
     { id: 'phase1', label: '初步分析章节相关性', status: 'pending' },
-    { id: 'phase2', label: '深入分析重点章节', status: 'pending' },
-    { id: 'generate', label: '生成个性化阅读地图', status: 'pending' },
+    { id: 'phase2', label: '生成阅读指令和依赖关系', status: 'pending' },
   ]);
 
   const updateStep = useCallback((stepId: string, status: AnalysisStep['status']) => {
@@ -59,7 +58,7 @@ export default function Home() {
       setBookData(parsedBookData);
       updateStep('parse', 'completed');
 
-      // Step 2 & 3 & 4: Analyze (combined in single API call for now)
+      // Step 2 & 3: Analyze
       updateStep('phase1', 'in_progress');
 
       const analyzeResponse = await fetch('/api/analyze', {
@@ -78,7 +77,6 @@ export default function Home() {
 
       updateStep('phase1', 'completed');
       updateStep('phase2', 'completed');
-      updateStep('generate', 'completed');
 
       const result: ReadingMap = await analyzeResponse.json();
       setReadingMap(result);
@@ -86,12 +84,10 @@ export default function Home() {
     } catch (err) {
       setError(err instanceof Error ? err.message : '发生未知错误');
       setState('upload');
-      // Reset steps
       setSteps([
-        { id: 'parse', label: '解析书籍结构', status: 'pending' },
+        { id: 'parse', label: '解析书籍结构（含小节）', status: 'pending' },
         { id: 'phase1', label: '初步分析章节相关性', status: 'pending' },
-        { id: 'phase2', label: '深入分析重点章节', status: 'pending' },
-        { id: 'generate', label: '生成个性化阅读地图', status: 'pending' },
+        { id: 'phase2', label: '生成阅读指令和依赖关系', status: 'pending' },
       ]);
     }
   }, [file, question, updateStep]);
@@ -103,6 +99,18 @@ export default function Home() {
     setError(null);
 
     try {
+      const mustReadChapters = readingMap.chapters
+        .filter(ch => ch.priority === 'must_read')
+        .map(ch => {
+          const originalChapter = bookData.chapters.find(c => c.id === ch.chapterId);
+          return {
+            chapterTitle: ch.chapterTitle,
+            keyPoints: ch.keyPoints,
+            content: originalChapter?.content || '',
+            sections: ch.sections || [],
+          };
+        });
+
       const response = await fetch('/api/generate-test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -135,10 +143,9 @@ export default function Home() {
     setTestQuestions([]);
     setError(null);
     setSteps([
-      { id: 'parse', label: '解析书籍结构', status: 'pending' },
+      { id: 'parse', label: '解析书籍结构（含小节）', status: 'pending' },
       { id: 'phase1', label: '初步分析章节相关性', status: 'pending' },
-      { id: 'phase2', label: '深入分析重点章节', status: 'pending' },
-      { id: 'generate', label: '生成个性化阅读地图', status: 'pending' },
+      { id: 'phase2', label: '生成阅读指令和依赖关系', status: 'pending' },
     ]);
   }, []);
 
@@ -148,48 +155,57 @@ export default function Home() {
 
   const canStart = file && question.trim().length > 0;
 
+  // Helper functions
+  const getReadModeLabel = (mode: string) => {
+    switch (mode) {
+      case 'deep_read': return { text: '📖 精读', color: 'bg-red-100 text-red-700' };
+      case 'skim': return { text: '👀 扫读', color: 'bg-yellow-100 text-yellow-700' };
+      case 'reference': return { text: '📚 参考', color: 'bg-gray-100 text-gray-700' };
+      default: return { text: mode, color: 'bg-gray-100 text-gray-700' };
+    }
+  };
+
+  const getPriorityStyle = (priority: string) => {
+    switch (priority) {
+      case 'must_read': return { border: '#ef4444', label: '🔴 必读' };
+      case 'recommended': return { border: '#f59e0b', label: '🟡 推荐' };
+      case 'optional': return { border: '#6b7280', label: '⚪ 可选' };
+      default: return { border: '#d1d5db', label: '⏭️ 跳过' };
+    }
+  };
+
+  const getChapterTitle = (chapterId: string) => {
+    const ch = readingMap?.chapters.find(c => c.chapterId === chapterId);
+    return ch?.chapterTitle || chapterId;
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white">
-      <div className="max-w-2xl mx-auto px-4 py-12">
+      <div className="max-w-3xl mx-auto px-4 py-12">
         {/* Header */}
         <header className="text-center mb-12">
-          <h1 className="text-4xl font-bold text-gray-900 mb-3">
-            📖 ReadPath
-          </h1>
-          <p className="text-lg text-gray-600">
-            带着问题读书的最短路径
-          </p>
+          <h1 className="text-4xl font-bold text-gray-900 mb-3">📖 ReadPath</h1>
+          <p className="text-lg text-gray-600">带着问题读书的最短路径</p>
         </header>
 
         {/* Main Content */}
         {state === 'upload' && (
           <div className="space-y-8">
-            <UploadArea
-              onFileSelect={setFile}
-              selectedFile={file}
-            />
-
-            <QuestionInput
-              value={question}
-              onChange={setQuestion}
-            />
+            <UploadArea onFileSelect={setFile} selectedFile={file} />
+            <QuestionInput value={question} onChange={setQuestion} />
 
             {error && (
-              <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
-                {error}
-              </div>
+              <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>
             )}
 
             <button
               onClick={handleAnalyze}
               disabled={!canStart}
-              className={`
-                w-full py-4 rounded-xl font-medium text-lg transition-all
-                ${canStart
+              className={`w-full py-4 rounded-xl font-medium text-lg transition-all ${
+                canStart
                   ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-lg hover:shadow-xl'
                   : 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                }
-              `}
+              }`}
             >
               🔍 开始分析
             </button>
@@ -204,105 +220,182 @@ export default function Home() {
 
         {state === 'result' && readingMap && (
           <div className="space-y-6">
-            {/* Result header */}
-            <div className="bg-white rounded-2xl shadow-lg p-8">
-              <h2 className="text-2xl font-bold text-gray-900 mb-2">
-                📖 《{readingMap.bookTitle}》— 你的阅读地图
-              </h2>
-              <p className="text-gray-600 mb-4">
-                你的问题：{readingMap.userQuestion}
-              </p>
+            {/* Header Card */}
+            <div className="bg-gradient-to-br from-blue-600 to-blue-700 rounded-2xl shadow-lg p-8 text-white">
+              <h2 className="text-2xl font-bold mb-2">📖 《{readingMap.bookTitle}》</h2>
+              <p className="text-blue-100 mb-4">你的问题：{readingMap.userQuestion}</p>
 
-              <div className="flex flex-wrap gap-6 text-sm">
+              <div className="flex flex-wrap gap-6">
                 <div className="flex items-center gap-2">
-                  <span className="text-2xl">📊</span>
-                  <span>
-                    全书 {readingMap.chapters.length} 章，重点阅读{' '}
-                    {readingMap.chapters.filter(c => c.priority === 'must_read').length} 章
-                  </span>
+                  <span className="text-3xl">⏱️</span>
+                  <div>
+                    <p className="text-2xl font-bold">{readingMap.estimatedReadTime || '约2小时'}</p>
+                    <p className="text-sm text-blue-200">预计阅读时间</p>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-2xl">⏱️</span>
-                  <span>{readingMap.estimatedReadTime}</span>
+                  <span className="text-3xl">📊</span>
+                  <div>
+                    <p className="text-2xl font-bold">
+                      {readingMap.chapters.filter(c => c.priority === 'must_read').length}章
+                    </p>
+                    <p className="text-sm text-blue-200">必读章节</p>
+                  </div>
                 </div>
               </div>
 
               {readingMap.summary && (
-                <p className="mt-4 text-gray-700 italic border-l-4 border-blue-200 pl-4">
-                  {readingMap.summary}
-                </p>
+                <p className="mt-6 pt-6 border-t border-blue-500 text-blue-100 italic">{readingMap.summary}</p>
               )}
             </div>
 
-            {/* Chapter recommendations */}
+            {/* Reading Tasks */}
+            {readingMap.readingTasks && readingMap.readingTasks.length > 0 && (
+              <div className="bg-amber-50 rounded-xl p-6 border border-amber-200">
+                <h3 className="text-lg font-semibold text-amber-800 mb-3 flex items-center gap-2">
+                  <span>🎯</span> 阅读任务
+                </h3>
+                <p className="text-sm text-amber-700 mb-3">读完这些内容后，你应该能回答以下问题：</p>
+                <ul className="space-y-2">
+                  {readingMap.readingTasks.map((task, idx) => (
+                    <li key={idx} className="flex items-start gap-2 text-amber-900">
+                      <span className="font-medium">{idx + 1}.</span>
+                      <span>{task}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Dependencies */}
+            {readingMap.dependencies && readingMap.dependencies.length > 0 && (
+              <div className="bg-purple-50 rounded-xl p-6 border border-purple-200">
+                <h3 className="text-lg font-semibold text-purple-800 mb-3 flex items-center gap-2">
+                  <span>🔗</span> 章节依赖关系
+                </h3>
+                <p className="text-sm text-purple-700 mb-3">建议按以下顺序阅读，因为概念有递进关系：</p>
+                <div className="space-y-2">
+                  {readingMap.dependencies.map((dep, idx) => (
+                    <div key={idx} className="text-sm text-purple-900 bg-white rounded-lg p-3">
+                      <strong>{getChapterTitle(dep.chapterId)}</strong>
+                      {dep.dependsOn.length > 0 && (
+                        <span className="text-purple-600">
+                          {' '}← 需要先读：{dep.dependsOn.map(id => getChapterTitle(id)).join('、')}
+                        </span>
+                      )}
+                      <p className="text-purple-500 text-xs mt-1">{dep.reason}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Chapter Recommendations */}
             <div className="space-y-4">
-              <h3 className="text-xl font-semibold text-gray-900">建议阅读顺序</h3>
+              <h3 className="text-xl font-semibold text-gray-900">📍 阅读路径</h3>
               {readingMap.chapters
                 .filter(ch => ch.priority !== 'skip')
-                .sort((a, b) => a.readOrder - b.readOrder)
-                .map((chapter) => (
-                  <div
-                    key={chapter.chapterId}
-                    className="bg-white rounded-xl shadow-sm p-6 border-l-4"
-                    style={{
-                      borderLeftColor:
-                        chapter.priority === 'must_read' ? '#ef4444' :
-                        chapter.priority === 'recommended' ? '#f59e0b' : '#6b7280'
-                    }}
-                  >
-                    <div className="flex items-start justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <span className="flex items-center justify-center w-7 h-7 rounded-full bg-blue-600 text-white text-sm font-bold">
-                          {chapter.readOrder}
-                        </span>
-                        <span className="text-lg">
-                          {chapter.priority === 'must_read' && '🔴必读'}
-                          {chapter.priority === 'recommended' && '🟡推荐'}
-                          {chapter.priority === 'optional' && '⚪可选'}
-                        </span>
-                        <span className="font-medium text-gray-900">
-                          {chapter.chapterTitle}
+                .sort((a, b) => (a.readOrder || 99) - (b.readOrder || 99))
+                .map((chapter) => {
+                  const style = getPriorityStyle(chapter.priority);
+                  return (
+                    <div
+                      key={chapter.chapterId}
+                      className="bg-white rounded-xl shadow-sm p-6 border-l-4"
+                      style={{ borderLeftColor: style.border }}
+                    >
+                      {/* Chapter Header */}
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          {chapter.readOrder && chapter.readOrder > 0 && (
+                            <span className="flex items-center justify-center w-7 h-7 rounded-full bg-blue-600 text-white text-sm font-bold">
+                              {chapter.readOrder}
+                            </span>
+                          )}
+                          <span className="text-lg">{style.label}</span>
+                          <span className="font-medium text-gray-900">{chapter.chapterTitle}</span>
+                        </div>
+                        <span className="text-sm text-gray-500 bg-gray-100 px-2 py-1 rounded">
+                          相关度 {chapter.relevanceScore}%
                         </span>
                       </div>
-                      <span className="text-sm text-gray-500">
-                        相关度 {chapter.relevanceScore}%
-                      </span>
+
+                      {/* Page Hint */}
+                      <p className="text-sm text-gray-500 mb-2 ml-9">📍 {chapter.pageHint}</p>
+
+                      {/* Reason */}
+                      <p className="text-gray-700 mb-3 ml-9">💡 {chapter.reason}</p>
+
+                      {/* Reading Instruction */}
+                      {chapter.readingInstruction && (
+                        <div className="ml-9 mb-4 bg-blue-50 rounded-lg p-4">
+                          <p className="text-sm font-medium text-blue-800 mb-2">📖 阅读方式</p>
+                          <div className="text-sm text-blue-700 space-y-1">
+                            {chapter.readingInstruction.lookFor && chapter.readingInstruction.lookFor.length > 0 && (
+                              <p><strong>重点找：</strong>{chapter.readingInstruction.lookFor.join('、')}</p>
+                            )}
+                            {chapter.readingInstruction.skipIf && (
+                              <p className="text-blue-500"><strong>可跳过：</strong>{chapter.readingInstruction.skipIf}</p>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Sections */}
+                      {chapter.sections && chapter.sections.length > 0 && (
+                        <div className="ml-9 space-y-2">
+                          <p className="text-sm font-medium text-gray-600">📑 小节指南</p>
+                          {chapter.sections.map((section, idx) => {
+                            const modeStyle = getReadModeLabel(section.readMode);
+                            return (
+                              <div key={idx} className="flex items-start gap-3 text-sm">
+                                <span className={`px-2 py-0.5 rounded text-xs font-medium ${modeStyle.color}`}>
+                                  {modeStyle.text}
+                                </span>
+                                <div className="flex-1">
+                                  <p className="font-medium text-gray-800">{section.sectionTitle}</p>
+                                  <p className="text-gray-500 text-xs">{section.location}</p>
+                                  {section.focusPoints && section.focusPoints.length > 0 && (
+                                    <p className="text-gray-600 text-xs mt-1">
+                                      找：{section.focusPoints.join('、')}
+                                    </p>
+                                  )}
+                                </div>
+                                {section.estimatedTime && (
+                                  <span className="text-gray-400 text-xs">{section.estimatedTime}</span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Key Points */}
+                      {chapter.keyPoints && chapter.keyPoints.length > 0 && (
+                        <div className="ml-9 mt-3 text-sm">
+                          <p className="text-gray-600 font-medium">🔑 核心论点</p>
+                          <ul className="mt-1 space-y-1">
+                            {chapter.keyPoints.map((point, idx) => (
+                              <li key={idx} className="text-gray-700 pl-2">· {point}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
                     </div>
-
-                    <p className="text-sm text-gray-500 mb-2 ml-9">
-                      📍 {chapter.pageHint}
-                    </p>
-
-                    <p className="text-gray-700 mb-3 ml-9">
-                      💡 {chapter.reason}
-                    </p>
-
-                    {chapter.keyPoints.length > 0 && (
-                      <div className="text-sm ml-9">
-                        <span className="text-gray-600">🔑 关键点：</span>
-                        <ul className="mt-1 space-y-1">
-                          {chapter.keyPoints.map((point, idx) => (
-                            <li key={idx} className="text-gray-700 pl-2">
-                              · {point}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
             </div>
 
-            {/* Skip chapters */}
+            {/* Skip Chapters */}
             {readingMap.chapters.filter(ch => ch.priority === 'skip').length > 0 && (
               <div className="bg-gray-50 rounded-xl p-6">
-                <h3 className="text-lg font-semibold text-gray-700 mb-3">可跳过的章节</h3>
-                <div className="space-y-2">
+                <h3 className="text-lg font-semibold text-gray-600 mb-3">⏭️ 可跳过的章节</h3>
+                <div className="space-y-1">
                   {readingMap.chapters
                     .filter(ch => ch.priority === 'skip')
                     .map((chapter) => (
                       <p key={chapter.chapterId} className="text-sm text-gray-500">
-                        ⏭️ {chapter.chapterTitle} — {chapter.reason}
+                        {chapter.chapterTitle} — {chapter.reason}
                       </p>
                     ))}
                 </div>
@@ -335,7 +428,6 @@ export default function Home() {
           />
         )}
 
-        {/* Footer */}
         <footer className="mt-16 text-center text-sm text-gray-500">
           <p>上传你的 EPUB，让 AI 帮你找到最高效的阅读路径</p>
         </footer>

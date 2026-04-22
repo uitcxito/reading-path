@@ -2,17 +2,15 @@ import EPub from 'epub2';
 import * as cheerio from 'cheerio';
 import fs from 'fs';
 import path from 'path';
-import { BookData, Chapter } from '@/types';
+import { BookData, Chapter, Section } from '@/types';
 
 /**
  * Strip HTML tags and extract plain text
  */
 function stripHtml(html: string): string {
   const $ = cheerio.load(html);
-  // Remove script and style elements
   $('script').remove();
   $('style').remove();
-  // Get text and normalize whitespace
   const text = $('body').text() || $.root().text();
   return text
     .replace(/\s+/g, ' ')
@@ -21,17 +19,83 @@ function stripHtml(html: string): string {
 }
 
 /**
+ * Extract sections from HTML based on h2/h3 headings
+ */
+function extractSections(html: string, chapterId: string): Section[] {
+  const $ = cheerio.load(html);
+  const sections: Section[] = [];
+
+  // Find all h2 and h3 headings
+  const headings = $('h2, h3, h4').toArray();
+
+  if (headings.length === 0) {
+    // No headings found, return single section for entire chapter
+    return [{
+      id: `${chapterId}-s0`,
+      title: '全文',
+      level: 2,
+      order: 0,
+      content: stripHtml(html),
+      wordCount: 0,
+      startLocation: '章节开头',
+    }];
+  }
+
+  // Extract content between headings
+  headings.forEach((heading, index) => {
+    const $heading = $(heading);
+    const tagName = 'name' in heading ? heading.name : ($heading.get(0) as any)?.name || 'h2';
+    const level = parseInt(tagName.charAt(1)); // h2 -> 2, h3 -> 3
+    const title = $heading.text().trim() || `小节 ${index + 1}`;
+
+    // Get content between this heading and the next
+    let content = '';
+    let $current = $heading.next();
+
+    while ($current.length > 0 && !$current.is('h2, h3, h4')) {
+      content += $current.text() + ' ';
+      $current = $current.next();
+    }
+
+    content = content.trim();
+
+    if (content.length > 50) { // Only include sections with meaningful content
+      sections.push({
+        id: `${chapterId}-s${index}`,
+        title,
+        level,
+        order: index,
+        content,
+        wordCount: 0, // Will be calculated later
+        startLocation: index === 0 ? '章节开头' : `第${index}小节`,
+      });
+    }
+  });
+
+  // If no valid sections were found, create one for the entire chapter
+  if (sections.length === 0) {
+    return [{
+      id: `${chapterId}-s0`,
+      title: '全文',
+      level: 2,
+      order: 0,
+      content: stripHtml(html),
+      wordCount: 0,
+      startLocation: '章节开头',
+    }];
+  }
+
+  return sections;
+}
+
+/**
  * Count words - different logic for Chinese vs English
- * Chinese: count characters (excluding spaces and punctuation)
- * English: count words by splitting on whitespace
  */
 function countWords(text: string, language: string): number {
   if (language === 'zh' || language === 'zh-cn' || language === 'zh-tw') {
-    // Chinese: count characters excluding spaces and common punctuation
     const chineseChars = text.replace(/[\s\p{P}]/gu, '');
     return chineseChars.length;
   } else {
-    // English and other languages: count words
     const words = text.trim().split(/\s+/).filter(w => w.length > 0);
     return words.length;
   }
@@ -58,45 +122,45 @@ function getChapterContent(epub: EPub, chapterId: string): Promise<string> {
 }
 
 /**
- * Parse EPUB file and extract book data
+ * Parse EPUB file and extract book data with section-level structure
  */
 export async function parseEpub(filePath: string): Promise<BookData> {
-  // Check file exists
   if (!fs.existsSync(filePath)) {
     throw new Error(`File not found: ${filePath}`);
   }
 
-  // Create EPub instance
   const epub = await EPub.createAsync(filePath);
 
-  // Wait for EPub to be ready
   await new Promise<void>((resolve, reject) => {
     epub.on('end', () => resolve());
     epub.on('error', (err: Error) => reject(err));
     epub.parse();
   });
 
-  // Extract metadata
   const title = epub.metadata.title || 'Unknown Title';
   const author = epub.metadata.creator || 'Unknown Author';
   const language = epub.metadata.language || 'en';
 
-  // Extract chapters
   const chapters: Chapter[] = [];
   const flow = epub.flow as Array<{ id: string; title?: string; order?: number }>;
 
   for (let i = 0; i < flow.length; i++) {
     const chapterInfo = flow[i];
-
-    // Skip non-chapter items (like nav, toc, cover)
     if (!chapterInfo || !chapterInfo.id) continue;
 
     try {
       const htmlContent = await getChapterContent(epub as EPub, chapterInfo.id);
       const plainText = stripHtml(htmlContent);
 
-      // Skip empty or very short chapters (likely navigation or blank pages)
       if (plainText.length < 100) continue;
+
+      // Extract section-level structure
+      const sections = extractSections(htmlContent, chapterInfo.id);
+
+      // Calculate word counts for sections
+      sections.forEach(section => {
+        section.wordCount = countWords(section.content, language);
+      });
 
       const chapter: Chapter = {
         id: chapterInfo.id,
@@ -105,12 +169,12 @@ export async function parseEpub(filePath: string): Promise<BookData> {
         content: plainText,
         wordCount: countWords(plainText, language),
         preview: generatePreview(plainText),
+        sections,
       };
 
       chapters.push(chapter);
     } catch (err) {
       console.warn(`Failed to parse chapter ${chapterInfo?.id}:`, err);
-      // Continue with other chapters
     }
   }
 
@@ -127,7 +191,6 @@ export async function parseEpub(filePath: string): Promise<BookData> {
  * Parse EPUB from buffer (for file uploads)
  */
 export async function parseEpubFromBuffer(buffer: Buffer, filename: string): Promise<BookData> {
-  // Write buffer to temp file
   const tempDir = path.join(process.cwd(), 'tmp');
   if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true });
@@ -140,7 +203,6 @@ export async function parseEpubFromBuffer(buffer: Buffer, filename: string): Pro
     const bookData = await parseEpub(tempFilePath);
     return bookData;
   } finally {
-    // Clean up temp file
     if (fs.existsSync(tempFilePath)) {
       fs.unlinkSync(tempFilePath);
     }

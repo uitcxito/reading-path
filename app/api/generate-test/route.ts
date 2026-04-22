@@ -38,6 +38,10 @@ export async function POST(request: NextRequest) {
           chapterTitle: ch.title,
           keyPoints: recommendation?.keyPoints || [],
           content: ch.content,
+          sections: (ch.sections || []).map(s => ({
+            title: s.title,
+            content: s.content,
+          })),
         };
       });
 

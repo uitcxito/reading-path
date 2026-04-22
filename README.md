@@ -1,36 +1,93 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ReadPath
+
+Turn any EPUB book into a personalized reading plan. Upload a book, ask a question, and get an AI-generated reading map that tells you exactly which chapters to read, in what order, and how deeply — so you can solve real-world problems without reading cover to cover.
+
+## Why ReadPath
+
+Most people don't read technical or non-fiction books front to back. They have a specific question or goal — "How do I improve my team's decision-making?" or "What's the fastest way to understand distributed systems?" — and need to find the relevant parts fast. ReadPath uses AI to analyze book structure and content, then generates a targeted reading path with chapter-level and section-level recommendations.
+
+## How It Works
+
+1. **Upload** an EPUB file
+2. **Ask** your question or describe your goal
+3. **Get a reading map** with:
+   - Priority-ranked chapters (must read / recommended / optional / skip)
+   - Section-level reading instructions (deep read, skim, or reference)
+   - Chapter dependency graph (what to read before what)
+   - Key points to look for in each chapter
+   - Estimated reading time
+4. **Read** the physical book using your personalized guide
+5. **Test** your understanding with an AI-generated comprehension quiz
+
+### Two-Phase AI Analysis
+
+ReadPath uses a cost-efficient two-phase approach:
+
+- **Phase 1 — Bird's Eye**: Sends chapter titles and 500-character previews to score each chapter's relevance (0–100)
+- **Phase 2 — Deep Dive**: Sends full content of high-scoring chapters (≥ 50) to generate detailed reading instructions and dependencies
+
+This dramatically reduces token usage by only processing relevant chapters in depth.
+
+## Tech Stack
+
+- **Framework**: Next.js 16 (App Router)
+- **Frontend**: React 19, Tailwind CSS 4
+- **EPUB Parsing**: epub2, cheerio (HTML-to-text)
+- **AI**: Deepseek API (OpenAI-compatible format)
+- **Language**: TypeScript
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- Node.js 18+
+- A [Deepseek API key](https://platform.deepseek.com/)
+
+### Setup
+
+```bash
+git clone https://github.com/uitcxito/reading-path.git
+cd reading-path
+npm install
+```
+
+Create a `.env.local` file:
+
+```
+DEEPSEEK_API_KEY=your_api_key
+```
+
+### Run
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Project Structure
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+app/
+├── api/
+│   ├── parse-epub/route.ts    # EPUB upload & parsing
+│   ├── analyze/route.ts       # Two-phase AI analysis
+│   └── generate-test/route.ts # Comprehension test generation
+├── page.tsx                    # Main app UI
+components/
+├── UploadArea.tsx
+├── QuestionInput.tsx
+├── ProgressBar.tsx
+├── ReadingMapDisplay.tsx
+└── ComprehensionTestDisplay.tsx
+lib/
+├── deepseek.ts                 # API client with retry logic
+├── epub-parser.ts              # EPUB → structured book data
+└── prompts.ts                  # Prompt templates
+types/
+└── index.ts                    # TypeScript interfaces
+```
 
-## Learn More
+## License
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+MIT
