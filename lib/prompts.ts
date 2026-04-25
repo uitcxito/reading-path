@@ -1,4 +1,4 @@
-import { BookData, Chapter, Phase1Result, Section } from '@/types';
+import { BookData, Chapter, Phase1Result, ReadingMap } from '@/types';
 
 /**
  * Generate Phase 1 prompt: Bird's eye analysis with section-level detail
@@ -259,4 +259,149 @@ ${chaptersContent}
 3. 开放题要求用户用自己的话解释概念或应用到实际场景
 4. 每道题都要关联到用户的原始问题
 5. 题目要能检测用户是否从书中找到了问题的答案`;
+}
+
+/**
+ * Generate AI-direct analysis prompt (no EPUB, based on AI knowledge)
+ */
+export function generateDirectAnalysisPrompt(bookName: string, userQuestion: string): string {
+  return `你是一位专业的阅读顾问。用户想阅读《${bookName}》并带着以下问题：
+${userQuestion}
+
+请你基于对这本书的了解，生成一份完整的阅读地图。
+
+**重要**：请先确认你知道这本书。如果你不确定这本书的具体内容和章节结构，返回：
+{ "error": "unknown_book" }
+
+如果你知道这本书，请分析其真实章节结构，为每个章节评估与用户问题的相关度，并生成详细的阅读地图。
+
+返回JSON格式，只返回JSON：
+{
+  "summary": "2-3句话总结这本书如何帮助用户解决他的问题",
+  "estimatedReadTime": "只读重点内容大约需要X小时",
+  "readingTasks": [
+    "读完应该能回答：问题1",
+    "读完应该能回答：问题2",
+    "读完应该能回答：问题3"
+  ],
+  "dependencies": [
+    {
+      "chapterId": "ch_1",
+      "dependsOn": ["ch_0"],
+      "reason": "因为概念X在前面章节定义"
+    }
+  ],
+  "chapters": [
+    {
+      "chapterId": "ch_1",
+      "chapterTitle": "真实章节标题",
+      "priority": "must_read / recommended / optional / skip",
+      "relevanceScore": 92,
+      "reason": "1-2句话说明这章的重要性",
+      "pageHint": "全书第X章，大约在前/中/后1/3处",
+      "readOrder": 1,
+      "readingInstruction": {
+        "approach": "sequential / selective / reference",
+        "skimSections": ["可以快速扫的小节标题"],
+        "deepReadSections": ["必须精读的小节标题"],
+        "lookFor": ["精读时要找的具体论点1", "要找的具体案例2"],
+        "skipIf": "什么情况下可以跳过这章"
+      },
+      "sections": [
+        {
+          "sectionId": "s_1_1",
+          "sectionTitle": "小节标题",
+          "readMode": "deep_read / skim / reference",
+          "location": "本章第X节约第X页",
+          "focusPoints": ["这个小节要重点找的内容"],
+          "estimatedTime": "约X分钟"
+        }
+      ],
+      "keyPoints": ["这章的核心论点1", "核心论点2"]
+    }
+  ]
+}
+
+## 关键要求
+1. 使用书籍的**真实章节标题和结构**，不要编造
+2. chapterId 使用 "ch_1", "ch_2" 等格式
+3. sectionId 使用 "s_1_1", "s_1_2" 等格式（章_节）
+4. 小节级别定位，让用户拿着纸质书能直接翻到
+5. 明确告诉用户哪些小节skim、哪些deep_read、精读时找什么
+6. 给出3-5个"读完应该能回答的问题"
+7. 标注章节间的概念依赖，建议阅读顺序
+
+## readMode 说明
+- deep_read: 精读，逐字阅读，做笔记
+- skim: 快速扫读，抓主旨即可
+- reference: 作为参考，需要时查阅
+
+## approach 说明
+- sequential: 按顺序从头读到尾
+- selective: 选择性阅读指定小节
+- reference: 作为参考资料查阅`;
+}
+
+/**
+ * Generate AI-direct test prompt (no real chapter content)
+ */
+export function generateAITestPrompt(
+  bookName: string,
+  userQuestion: string,
+  readingMap: ReadingMap
+): string {
+  const chaptersSummary = readingMap.chapters
+    .filter((ch) => ch.priority === 'must_read')
+    .map((ch) => {
+      const sections = ch.sections?.map((s) => s.sectionTitle).join('、') || '';
+      return `- 「${ch.chapterTitle}」${sections ? `小节：${sections}` : ''}\n  关键论点：${ch.keyPoints.join('、')}`;
+    })
+    .join('\n');
+
+  return `你是一位教育专家。用户阅读了《${bookName}》中的以下章节，现在需要检测他是否真正理解了核心内容。
+
+## 用户的问题/目标
+${userQuestion}
+
+## 用户阅读的章节
+${chaptersSummary}
+
+## 你的任务
+
+基于你对《${bookName}》的了解，生成5道理解测试题，测试用户是否：
+1. 找到了他问题的答案
+2. 理解了核心概念
+3. 能将知识应用到实际场景
+
+返回JSON格式，只返回JSON：
+{
+  "questions": [
+    {
+      "id": "q1",
+      "question": "题目内容",
+      "type": "multiple_choice",
+      "options": ["A. 选项1", "B. 选项2", "C. 选项3", "D. 选项4"],
+      "correctAnswer": "A",
+      "explanation": "解释为什么这个答案正确，引用书中的具体论点",
+      "relatedChapter": "关联章节标题",
+      "relatedSection": "关联小节标题"
+    },
+    {
+      "id": "q2",
+      "question": "开放题：用你自己的话解释...",
+      "type": "open_ended",
+      "correctAnswer": "参考答案要点：1)... 2)... 3)...",
+      "explanation": "好的回答应该包含这些要点",
+      "relatedChapter": "关联章节标题",
+      "relatedSection": "关联小节标题"
+    }
+  ]
+}
+
+## 要求
+1. 5道题中：3道选择题 + 2道开放题
+2. 选择题要有迷惑性，不能一眼看出答案
+3. 开放题要求用户用自己的话解释概念或应用到实际场景
+4. 每道题都要关联到用户的原始问题
+5. 题目基于你对这本书的真实知识，不要编造内容`;
 }

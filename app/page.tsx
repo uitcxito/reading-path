@@ -3,25 +3,36 @@
 import { useState, useCallback } from 'react';
 import UploadArea from '@/components/UploadArea';
 import QuestionInput from '@/components/QuestionInput';
+import ModeSelector from '@/components/ModeSelector';
+import BookNameInput from '@/components/BookNameInput';
+import ZLibraryLink from '@/components/ZLibraryLink';
 import ProgressBar, { AnalysisStep } from '@/components/ProgressBar';
 import ComprehensionTestDisplay from '@/components/ComprehensionTestDisplay';
-import { BookData, ReadingMap, TestQuestion, ChapterRecommendation, SectionRecommendation, ChapterDependency } from '@/types';
+import { BookData, ReadingMap, TestQuestion, AnalysisMode, ChapterRecommendation, SectionRecommendation, ChapterDependency } from '@/types';
 
 type AppState = 'upload' | 'analyzing' | 'result' | 'test';
 
+const epubSteps: AnalysisStep[] = [
+  { id: 'parse', label: '解析书籍结构（含小节）', status: 'pending' },
+  { id: 'phase1', label: '初步分析章节相关性', status: 'pending' },
+  { id: 'phase2', label: '生成阅读指令和依赖关系', status: 'pending' },
+];
+
+const aiDirectSteps: AnalysisStep[] = [
+  { id: 'analyze', label: 'AI 基于知识生成阅读地图', status: 'pending' },
+];
+
 export default function Home() {
   const [state, setState] = useState<AppState>('upload');
+  const [mode, setMode] = useState<AnalysisMode>('epub');
   const [file, setFile] = useState<File | null>(null);
+  const [bookName, setBookName] = useState('');
   const [question, setQuestion] = useState('');
   const [bookData, setBookData] = useState<BookData | null>(null);
   const [readingMap, setReadingMap] = useState<ReadingMap | null>(null);
   const [testQuestions, setTestQuestions] = useState<TestQuestion[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [steps, setSteps] = useState<AnalysisStep[]>([
-    { id: 'parse', label: '解析书籍结构（含小节）', status: 'pending' },
-    { id: 'phase1', label: '初步分析章节相关性', status: 'pending' },
-    { id: 'phase2', label: '生成阅读指令和依赖关系', status: 'pending' },
-  ]);
+  const [steps, setSteps] = useState<AnalysisStep[]>(epubSteps);
 
   const updateStep = useCallback((stepId: string, status: AnalysisStep['status']) => {
     setSteps((prev) =>
@@ -84,40 +95,65 @@ export default function Home() {
     } catch (err) {
       setError(err instanceof Error ? err.message : '发生未知错误');
       setState('upload');
-      setSteps([
-        { id: 'parse', label: '解析书籍结构（含小节）', status: 'pending' },
-        { id: 'phase1', label: '初步分析章节相关性', status: 'pending' },
-        { id: 'phase2', label: '生成阅读指令和依赖关系', status: 'pending' },
-      ]);
+      setSteps(epubSteps);
     }
   }, [file, question, updateStep]);
 
+  const handleAnalyzeDirect = useCallback(async () => {
+    if (!bookName.trim() || !question.trim()) {
+      setError('请输入书名和问题');
+      return;
+    }
+
+    setState('analyzing');
+    setError(null);
+    setSteps(aiDirectSteps);
+
+    try {
+      updateStep('analyze', 'in_progress');
+
+      const response = await fetch('/api/analyze-direct', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bookName: bookName.trim(), question: question.trim() }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'AI 分析失败');
+      }
+
+      const result: ReadingMap = await response.json();
+      setReadingMap(result);
+      updateStep('analyze', 'completed');
+      setState('result');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '发生未知错误');
+      setState('upload');
+      setSteps(aiDirectSteps);
+    }
+  }, [bookName, question, updateStep]);
+
   const handleStartTest = useCallback(async () => {
-    if (!readingMap || !bookData) return;
+    if (!readingMap) return;
+    if (mode === 'epub' && !bookData) return;
 
     setState('analyzing');
     setError(null);
 
     try {
-      const mustReadChapters = readingMap.chapters
-        .filter(ch => ch.priority === 'must_read')
-        .map(ch => {
-          const originalChapter = bookData.chapters.find(c => c.id === ch.chapterId);
-          return {
-            chapterTitle: ch.chapterTitle,
-            keyPoints: ch.keyPoints,
-            content: originalChapter?.content || '',
-            sections: ch.sections || [],
-          };
-        });
+      const body: Record<string, unknown> = { readingMap };
+
+      if (mode === 'epub' && bookData) {
+        body.chapters = bookData.chapters;
+      } else {
+        body.bookName = bookName;
+      }
 
       const response = await fetch('/api/generate-test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          readingMap,
-          chapters: bookData.chapters,
-        }),
+        body: JSON.stringify(body),
       });
 
       if (!response.ok) {
@@ -132,28 +168,28 @@ export default function Home() {
       setError(err instanceof Error ? err.message : '生成测试失败');
       setState('result');
     }
-  }, [readingMap, bookData]);
+  }, [readingMap, bookData, mode, bookName]);
 
   const handleReset = useCallback(() => {
     setState('upload');
+    setMode('epub');
     setFile(null);
+    setBookName('');
     setQuestion('');
     setBookData(null);
     setReadingMap(null);
     setTestQuestions([]);
     setError(null);
-    setSteps([
-      { id: 'parse', label: '解析书籍结构（含小节）', status: 'pending' },
-      { id: 'phase1', label: '初步分析章节相关性', status: 'pending' },
-      { id: 'phase2', label: '生成阅读指令和依赖关系', status: 'pending' },
-    ]);
+    setSteps(epubSteps);
   }, []);
 
   const handleTestComplete = useCallback((score: { correct: number; total: number }) => {
     console.log('Test completed with score:', score);
   }, []);
 
-  const canStart = file && question.trim().length > 0;
+  const canStart = mode === 'epub'
+    ? !!file && question.trim().length > 0
+    : bookName.trim().length > 0 && question.trim().length > 0;
 
   // Helper functions
   const getReadModeLabel = (mode: string) => {
@@ -180,46 +216,71 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white">
-      <div className="max-w-3xl mx-auto px-4 py-12">
+    <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-blue-50/30">
+      <div className="max-w-3xl mx-auto px-4 py-16">
         {/* Header */}
-        <header className="text-center mb-12">
-          <h1 className="text-4xl font-bold text-gray-900 mb-3">📖 ReadPath</h1>
-          <p className="text-lg text-gray-600">带着问题读书的最短路径</p>
+        <header className="text-center mb-14">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 shadow-lg shadow-blue-200 mb-5">
+            <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" />
+            </svg>
+          </div>
+          <h1 className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">ReadPath</h1>
+          <p className="text-base text-gray-400">带着问题读书的最短路径</p>
         </header>
 
         {/* Main Content */}
         {state === 'upload' && (
-          <div className="space-y-8">
-            <UploadArea onFileSelect={setFile} selectedFile={file} />
+          <div className="bg-white rounded-3xl shadow-sm border border-gray-100 p-8 space-y-8">
+            <ModeSelector mode={mode} onModeChange={setMode} />
+
+            {mode === 'epub' ? (
+              <div className="space-y-3">
+                <UploadArea onFileSelect={setFile} selectedFile={file} />
+                <ZLibraryLink bookName={file?.name?.replace('.epub', '') || ''} variant="epub" />
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <BookNameInput value={bookName} onChange={setBookName} />
+                <ZLibraryLink bookName={bookName} variant="ai" />
+              </div>
+            )}
+
             <QuestionInput value={question} onChange={setQuestion} />
 
             {error && (
-              <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>
+              <div className="p-4 bg-red-50 border border-red-100 rounded-2xl text-red-600 text-sm">{error}</div>
             )}
 
             <button
-              onClick={handleAnalyze}
+              onClick={mode === 'epub' ? handleAnalyze : handleAnalyzeDirect}
               disabled={!canStart}
-              className={`w-full py-4 rounded-xl font-medium text-lg transition-all ${
+              className={`w-full py-4 rounded-2xl font-semibold text-base transition-all duration-200 ${
                 canStart
-                  ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-lg hover:shadow-xl'
-                  : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:shadow-lg hover:shadow-blue-200 hover:-translate-y-0.5 active:translate-y-0'
+                  : 'bg-gray-100 text-gray-300 cursor-not-allowed'
               }`}
             >
-              🔍 开始分析
+              开始分析
             </button>
           </div>
         )}
 
         {state === 'analyzing' && (
-          <div className="bg-white rounded-2xl shadow-lg p-8">
-            <ProgressBar steps={steps} bookTitle={bookData?.title} />
+          <div className="bg-white rounded-3xl shadow-sm border border-gray-100 p-8">
+            <ProgressBar steps={steps} bookTitle={mode === 'epub' ? bookData?.title : bookName} />
           </div>
         )}
 
         {state === 'result' && readingMap && (
           <div className="space-y-6">
+            {/* AI Direct Disclaimer */}
+            {mode === 'ai_direct' && (
+              <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-700 text-sm">
+                ⚠️ 章节结构基于 AI 知识，可能与实际版本有差异。建议对照纸质书确认。
+              </div>
+            )}
+
             {/* Header Card */}
             <div className="bg-gradient-to-br from-blue-600 to-blue-700 rounded-2xl shadow-lg p-8 text-white">
               <h2 className="text-2xl font-bold mb-2">📖 《{readingMap.bookTitle}》</h2>
@@ -428,8 +489,8 @@ export default function Home() {
           />
         )}
 
-        <footer className="mt-16 text-center text-sm text-gray-500">
-          <p>上传你的 EPUB，让 AI 帮你找到最高效的阅读路径</p>
+        <footer className="mt-16 text-center text-xs text-gray-300">
+          <p>上传 EPUB 或让 AI 直接分析，帮你找到最高效的阅读路径</p>
         </footer>
       </div>
     </div>

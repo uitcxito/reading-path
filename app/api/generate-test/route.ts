@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { callDeepseekWithRetry } from '@/lib/deepseek';
-import { generateTestPrompt } from '@/lib/prompts';
+import { generateTestPrompt, generateAITestPrompt } from '@/lib/prompts';
 import { ComprehensionTest, ReadingMap, Chapter } from '@/types';
 
 export const runtime = 'nodejs';
@@ -8,52 +8,65 @@ export const maxDuration = 60;
 
 interface GenerateTestRequest {
   readingMap: ReadingMap;
-  chapters: Chapter[];
+  chapters?: Chapter[];
+  bookName?: string;
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body: GenerateTestRequest = await request.json();
-    const { readingMap, chapters } = body;
+    const { readingMap, chapters, bookName } = body;
 
-    if (!readingMap || !chapters || chapters.length === 0) {
+    if (!readingMap) {
       return NextResponse.json(
-        { error: 'Missing readingMap or chapters' },
+        { error: 'Missing readingMap' },
         { status: 400 }
       );
     }
 
-    // Get must_read chapters with their content
-    const mustReadChapterIds = new Set(
-      readingMap.chapters
-        .filter((ch) => ch.priority === 'must_read')
-        .map((ch) => ch.chapterId)
-    );
+    let prompt: string;
 
-    const mustReadChapters = chapters
-      .filter((ch) => mustReadChapterIds.has(ch.id))
-      .map((ch) => {
-        const recommendation = readingMap.chapters.find((r) => r.chapterId === ch.id);
-        return {
-          chapterTitle: ch.title,
-          keyPoints: recommendation?.keyPoints || [],
-          content: ch.content,
-          sections: (ch.sections || []).map(s => ({
-            title: s.title,
-            content: s.content,
-          })),
-        };
-      });
-
-    if (mustReadChapters.length === 0) {
-      return NextResponse.json(
-        { error: 'No must-read chapters found' },
-        { status: 400 }
+    // AI-direct mode: no real chapters, use AI knowledge
+    if (!chapters || chapters.length === 0) {
+      if (!bookName) {
+        return NextResponse.json(
+          { error: 'Missing bookName or chapters' },
+          { status: 400 }
+        );
+      }
+      prompt = generateAITestPrompt(bookName, readingMap.userQuestion, readingMap);
+    } else {
+      // EPUB mode: use real chapter content
+      const mustReadChapterIds = new Set(
+        readingMap.chapters
+          .filter((ch) => ch.priority === 'must_read')
+          .map((ch) => ch.chapterId)
       );
-    }
 
-    // Generate test questions
-    const prompt = generateTestPrompt(readingMap.userQuestion, mustReadChapters);
+      const mustReadChapters = chapters
+        .filter((ch) => mustReadChapterIds.has(ch.id))
+        .map((ch) => {
+          const recommendation = readingMap.chapters.find((r) => r.chapterId === ch.id);
+          return {
+            chapterTitle: ch.title,
+            keyPoints: recommendation?.keyPoints || [],
+            content: ch.content,
+            sections: (ch.sections || []).map(s => ({
+              title: s.title,
+              content: s.content,
+            })),
+          };
+        });
+
+      if (mustReadChapters.length === 0) {
+        return NextResponse.json(
+          { error: 'No must-read chapters found' },
+          { status: 400 }
+        );
+      }
+
+      prompt = generateTestPrompt(readingMap.userQuestion, mustReadChapters);
+    }
 
     const test = await callDeepseekWithRetry<ComprehensionTest>(
       [

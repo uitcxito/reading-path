@@ -1,19 +1,22 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+说中文
 
 ## Project Overview
 
-ReadPath is a web application that generates personalized "reading maps" for EPUB books. Users upload an EPUB file and input their question/goal, then AI analyzes which chapters are most relevant and generates a reading guide with prioritized chapter recommendations. After reading the physical book, users can take a comprehension test.
+ReadPath is a web app that generates personalized "reading maps" for EPUB books. Users upload an EPUB, state their question/goal, and AI produces a prioritized reading guide with chapter- and section-level recommendations. After reading, users take an AI-generated comprehension test. All UI text and AI prompts are in Chinese.
 
 ## Development Commands
 
 ```bash
-npm run dev      # Start development server (http://localhost:3000)
-npm run build    # Build for production
-npm run start    # Start production server
-npm run lint     # Run ESLint
+npm run dev      # Start dev server at http://localhost:3000
+npm run build    # Production build
+npm run start    # Run production server
+npm run lint     # ESLint (flat config, v9)
 ```
+
+No test framework is installed — there are no tests.
 
 ## Environment Variables
 
@@ -22,63 +25,88 @@ Required in `.env.local`:
 DEEPSEEK_API_KEY=your_api_key
 ```
 
+That is the only env var. The Deepseek API URL is hardcoded in `lib/deepseek.ts`.
+
 ## Architecture
 
-### Two-Phase AI Analysis
+### Single-Page State Machine
 
-The core analysis happens in `/api/analyze/route.ts` using a two-phase approach:
+The entire frontend lives in `app/page.tsx` as a `'use client'` component with a 4-state FSM — no routing:
 
-1. **Phase 1 (Bird's Eye)**: Sends chapter titles + 500-char previews to Deepseek to get initial relevance scores (0-100) for each chapter
-2. **Phase 2 (Deep Dive)**: Sends full content of chapters with score ≥ 50 to generate detailed reading map with priorities, reading order, and key points
+```
+upload → analyzing → result → test
+                              ↓
+                          (back to result)
+```
 
-This approach saves tokens by only sending full content for relevant chapters.
+All state is in React `useState`. There is no database, no persistence, no user accounts. The app is fully stateless and ephemeral.
+
+### Two-Phase AI Analysis (Token Optimization)
+
+The core pattern in `app/api/analyze/route.ts`:
+
+1. **Phase 1 (Bird's Eye)**: Sends chapter titles + 300-char previews (from 500-char `preview` field) + section titles → gets relevance scores (0–100) per chapter. `maxTokens: 4096`.
+2. **Phase 2 (Deep Dive)**: Sends full content of chapters scoring ≥ 40 → generates detailed `ReadingMap` with section-level reading instructions. `maxTokens: 8192`.
+
+The threshold is 40 (not 50) to include more context chapters.
 
 ### Data Flow
 
 ```
-EPUB Upload → parse-epub API → BookData (chapters with content + preview)
+EPUB upload → POST /api/parse-epub → BookData (chapters + sections)
     ↓
-analyze API → Phase 1 (scores) → Phase 2 (ReadingMap)
+POST /api/analyze → Phase 1 (scores) → Phase 2 (ReadingMap)
     ↓
-Frontend displays reading map → User reads physical book
+Frontend renders reading map → user reads physical book
     ↓
-generate-test API → ComprehensionTest (3 multiple choice + 2 open questions)
+POST /api/generate-test → ComprehensionTest (3 MC + 2 open-ended)
 ```
 
 ### Key Types (`types/index.ts`)
 
-- `BookData`: Parsed EPUB with `Chapter[]` (id, title, content, wordCount, preview)
-- `ReadingMap`: AI-generated guide with `ChapterRecommendation[]` (priority, relevanceScore, keyPoints, readOrder)
-- `ChapterRecommendation.priority`: `'must_read' | 'recommended' | 'optional' | 'skip'`
+- `BookData` → `Chapter[]` → `Section[]` (hierarchical: chapters contain sections parsed from h2/h3/h4 headings)
+- `ReadingMap` → `ChapterRecommendation[]` with `priority: 'must_read' | 'recommended' | 'optional' | 'skip'`
+- `SectionRecommendation` with `readMode: 'deep_read' | 'skim' | 'reference'`
+- `ReadingInstruction` with `approach: 'sequential' | 'selective' | 'reference'`
+- `ComprehensionTest` → `TestQuestion[]` with `type: 'multiple_choice' | 'open_ended'`
 
 ### API Routes
 
-All routes use `runtime = 'nodejs'` (not Edge) because epub2 depends on Node.js `fs` module.
+All routes use `runtime = 'nodejs'` (not Edge) because `epub2` depends on Node.js `fs`.
 
-- `POST /api/parse-epub`: Accepts FormData with EPUB file, returns `BookData`
-- `POST /api/analyze`: Accepts `{ bookData, question }`, returns `ReadingMap`
-- `POST /api/generate-test`: Accepts `{ readingMap, chapters }`, returns `ComprehensionTest`
+| Route | Input | Output | Timeout |
+|-------|-------|--------|---------|
+| `POST /api/parse-epub` | FormData (`.epub`, max 50MB) | `BookData` | default |
+| `POST /api/analyze` | `{ bookData, question }` | `ReadingMap` | 120s |
+| `POST /api/generate-test` | `{ readingMap, chapters }` | `ComprehensionTest` | 60s |
 
 ### EPUB Parsing (`lib/epub-parser.ts`)
 
-- Uses `epub2` library for server-side parsing
-- Converts HTML to plain text with `cheerio`
-- Skips chapters with < 100 characters (navigation/blank pages)
-- Different word counting logic for Chinese (character count) vs English (word count)
+- `epub2` for server-side parsing; `cheerio` for HTML→text
+- Writes temp file to `./tmp/`, parses, then deletes
+- Skips chapters with < 100 chars (navigation/blank pages)
+- Chinese: character count. English: word count.
+- `extractSections()` parses h2/h3/h4 into `Section[]` with content
 
 ### AI Integration (`lib/deepseek.ts`)
 
-- Calls Deepseek API (OpenAI-compatible format) at `https://api.deepseek.com/v1/chat/completions`
-- Uses `response_format: { type: 'json_object' }` for structured output
-- Temperature 0.3 for stable outputs
-- Includes retry logic with exponential backoff
-- `safeParseJSON` handles markdown code block wrappers
+- Deepseek API (OpenAI-compatible) at `https://api.deepseek.com/v1/chat/completions`
+- `response_format: { type: 'json_object' }` for structured output
+- Temperature 0.3 for stability
+- `callDeepseekWithRetry()`: max 2 retries, exponential backoff (1s/2s)
+- `safeParseJSON()`: strips markdown code block wrappers before parsing
 
-### Prompt Templates (`lib/prompts.ts`)
+### Prompts (`lib/prompts.ts`)
 
-Contains Chinese prompts for:
-- `generatePhase1Prompt`: Bird's eye chapter scoring
-- `generatePhase2Prompt`: Deep analysis with full chapter content
-- `generateTestPrompt`: Comprehension test generation
+All prompts are in Chinese and request strict JSON output:
+- `generatePhase1Prompt`: chapter scoring (titles + 300-char previews + section titles)
+- `generatePhase2Prompt`: deep analysis (section content truncated to 2000 chars each)
+- `generateTestPrompt`: 5 questions from `must_read` chapters (section content truncated to 3000 chars)
 
-All prompts request strict JSON output with specific schemas.
+## Notes
+
+- **Path alias**: `@/*` maps to the project root (see `tsconfig.json`)
+- **Next.js 16**: Per `AGENTS.md`, this version has breaking changes — check `node_modules/next/dist/docs/` before writing code
+- **Unused component**: `components/ReadingMapDisplay.tsx` is not used; `page.tsx` renders the reading map inline
+- **Tailwind v4**: Uses `@tailwindcss/postcss` plugin, not the older `tailwind.config.js` approach
+- **Blueprint**: `ReadPath_施工蓝图 (1).md` is the original Chinese design doc — the type system has evolved beyond it

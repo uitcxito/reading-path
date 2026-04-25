@@ -1,3 +1,6 @@
+// ===== 分析模式 =====
+export type AnalysisMode = 'epub' | 'ai_direct';
+
 // ===== EPUB 解析后的数据结构 =====
 export interface BookData {
   title: string;
