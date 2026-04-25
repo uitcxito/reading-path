@@ -8,7 +8,7 @@ Most people don't read technical or non-fiction books front to back. They have a
 
 ## How It Works
 
-1. **Upload** an EPUB file
+1. **Choose a mode**: upload an EPUB file, or enter a book name for AI direct analysis
 2. **Ask** your question or describe your goal
 3. **Get a reading map** with:
    - Priority-ranked chapters (must read / recommended / optional / skip)
@@ -19,14 +19,10 @@ Most people don't read technical or non-fiction books front to back. They have a
 4. **Read** the physical book using your personalized guide
 5. **Test** your understanding with an AI-generated comprehension quiz
 
-### Two-Phase AI Analysis
+### Two Modes
 
-ReadPath uses a cost-efficient two-phase approach:
-
-- **Phase 1 — Bird's Eye**: Sends chapter titles and 500-character previews to score each chapter's relevance (0–100)
-- **Phase 2 — Deep Dive**: Sends full content of high-scoring chapters (≥ 50) to generate detailed reading instructions and dependencies
-
-This dramatically reduces token usage by only processing relevant chapters in depth.
+- **EPUB Upload** — Parse your own EPUB file. Uses a cost-efficient two-phase AI analysis: first scores chapter relevance (0–100), then deep-dives into high-scoring chapters (≥ 40) for detailed reading instructions.
+- **AI Direct Analysis** — Enter a book name and AI generates a reading map from its knowledge. No file needed. Includes a Z-Library search link if you want to find the EPUB.
 
 ## Tech Stack
 
@@ -71,19 +67,24 @@ Open [http://localhost:3000](http://localhost:3000).
 app/
 ├── api/
 │   ├── parse-epub/route.ts    # EPUB upload & parsing
-│   ├── analyze/route.ts       # Two-phase AI analysis
+│   ├── analyze/route.ts       # Two-phase EPUB analysis
+│   ├── analyze-direct/route.ts # AI knowledge-based analysis
 │   └── generate-test/route.ts # Comprehension test generation
-├── page.tsx                    # Main app UI
+├── page.tsx                    # Main app UI (4-state FSM)
+├── layout.tsx
+└── globals.css
 components/
-├── UploadArea.tsx
-├── QuestionInput.tsx
-├── ProgressBar.tsx
-├── ReadingMapDisplay.tsx
-└── ComprehensionTestDisplay.tsx
+├── ModeSelector.tsx            # EPUB / AI direct mode toggle
+├── UploadArea.tsx              # Drag-and-drop EPUB upload
+├── BookNameInput.tsx           # Book name input for AI mode
+├── QuestionInput.tsx           # User question textarea
+├── ZLibraryLink.tsx            # Z-Library search link
+├── ProgressBar.tsx             # Analysis progress steps
+└── ComprehensionTestDisplay.tsx # Test UI
 lib/
-├── deepseek.ts                 # API client with retry logic
-├── epub-parser.ts              # EPUB → structured book data
-└── prompts.ts                  # Prompt templates
+├── deepseek.ts                 # Deepseek API client with retry
+├── epub-parser.ts              # EPUB → structured BookData
+└── prompts.ts                  # All prompt templates
 types/
 └── index.ts                    # TypeScript interfaces
 ```
